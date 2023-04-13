@@ -1,5 +1,7 @@
 import { NativeEventEmitter, NativeModules, Alert } from 'react-native';
 import utils from './util';
+import type { BitcoinTransaction, BitcoinTransactionMerkleProof, ExternalService } from './interfaces';
+import { BlockstreamApi } from './blockstream';
 const { RnLdk: RnLdkNative } = NativeModules;
 const pckg = require('../package.json');
 
@@ -98,6 +100,14 @@ class RnLdkImplementation {
   logs: LogMsg[] = [];
 
   private started = false;
+
+  private externalService: ExternalService;
+
+  constructor() {
+    this.externalService = new BlockstreamApi({
+      testnet: true,
+    })
+  }
 
   private injectedScript2address: ((scriptHex: string) => Promise<string>) | null = null;
   private injectedDecodeInvoice: ((bolt11: string) => Promise<object>) | null = null;
@@ -244,11 +254,7 @@ class RnLdkImplementation {
   async _broadcast(event: BroadcastMsg) {
     this.logToGeneralLog('broadcasting', event);
     try {
-      const response = await fetch('https://blockstream.info/api/tx', {
-        method: 'POST',
-        body: event.txhex,
-      });
-      return await response.text();
+      return await this.externalService.broadcastTransaction(event.txhex);
     } catch (e) {
       console.error(e);
       // @ts-ignore
@@ -299,24 +305,22 @@ class RnLdkImplementation {
     this.logToGeneralLog('checkBlockchain() 3/x');
     if (progressCallback) progressCallback(3 / 8);
     for (const regTx of this.registeredTxs) {
-      let json;
+      let json: BitcoinTransaction | undefined;
       try {
-        const response = await fetch('https://blockstream.info/api/tx/' + regTx.txid);
-        json = await response.json();
-      } catch (_) {}
+        json = await this.externalService.getTransaction(regTx.txid);
+      } catch (_) { }
       if (json && json.status && json.status.confirmed && json.status.block_height) {
         // success! tx confirmed, and we need to notify LDK about it
 
-        let jsonPos;
+        let jsonPos: BitcoinTransactionMerkleProof | undefined;
         try {
-          const responsePos = await fetch('https://blockstream.info/api/tx/' + regTx.txid + '/merkle-proof');
-          jsonPos = await responsePos.json();
-        } catch (_) {}
+          jsonPos = await this.externalService.getTransactionMerkleProof(regTx.txid);
+        } catch (_) { }
 
         if (jsonPos && jsonPos.merkle) {
           confirmedBlocks[json.status.block_height + ''] = confirmedBlocks[json.status.block_height + ''] || {};
-          const responseHex = await fetch('https://blockstream.info/api/tx/' + regTx.txid + '/hex');
-          confirmedBlocks[json.status.block_height + ''][jsonPos.pos + ''] = await responseHex.text();
+          const txHex = await this.externalService.getTransactionHex(regTx.txid);
+          confirmedBlocks[json.status.block_height + ''][jsonPos.pos + ''] = txHex
         }
       }
     }
@@ -325,26 +329,24 @@ class RnLdkImplementation {
     this.logToGeneralLog('checkBlockchain() 4/x');
     if (progressCallback) progressCallback(4 / 8);
     for (const regOut of this.registeredOutputs) {
-      let txs: any[] = [];
+      let txs: BitcoinTransaction[] = [];
       try {
         const address = await this.script2address(regOut.script_pubkey);
-        const response = await fetch('https://blockstream.info/api/address/' + address + '/txs');
-        txs = await response.json();
-      } catch (_) {}
+        txs = await this.externalService.getAddressTransactions(address);
+      } catch (_) { }
       for (const tx of txs) {
         if (tx && tx.status && tx.status.confirmed && tx.status.block_height) {
           // got confirmed tx for that output!
 
           let jsonPos;
           try {
-            const responsePos = await fetch('https://blockstream.info/api/tx/' + tx.txid + '/merkle-proof');
-            jsonPos = await responsePos.json();
-          } catch (_) {}
+            jsonPos = await this.externalService.getTransactionMerkleProof(tx.txid);
+          } catch (_) { }
 
           if (jsonPos && jsonPos.merkle) {
-            const responseHex = await fetch('https://blockstream.info/api/tx/' + tx.txid + '/hex');
+            const txHex = await this.externalService.getTransactionHex(tx.txid);
             confirmedBlocks[tx.status.block_height + ''] = confirmedBlocks[tx.status.block_height + ''] || {};
-            confirmedBlocks[tx.status.block_height + ''][jsonPos.pos + ''] = await responseHex.text();
+            confirmedBlocks[tx.status.block_height + ''][jsonPos.pos + ''] = txHex;
           }
         }
       }
@@ -381,8 +383,7 @@ class RnLdkImplementation {
     for (const txid of txidArr) {
       let confirmed = false;
       try {
-        const response = await fetch('https://blockstream.info/api/tx/' + txid + '/merkle-proof');
-        const tx: any = await response.json();
+        const tx: BitcoinTransactionMerkleProof = await this.externalService.getTransactionMerkleProof(txid);
         if (tx && tx.block_height) confirmed = true;
       } catch (_) {
         confirmed = false;
@@ -469,7 +470,9 @@ class RnLdkImplementation {
   async getNodeId(): Promise<string> {
     if (!this.started) throw new Error('LDK not yet started');
     this.logToGeneralLog('getting node id');
-    return RnLdkNative.getNodeId();
+    const nodeId = await RnLdkNative.getNodeId();
+    this.logToGeneralLog('node id', nodeId);
+    return nodeId;
   }
 
   /**
@@ -501,35 +504,19 @@ class RnLdkImplementation {
   }
 
   private async getHeaderHexByHeight(height: number) {
-    const response2 = await fetch('https://blockstream.info/api/block-height/' + height);
-    const hash = await response2.text();
-    const response3 = await fetch('https://blockstream.info/api/block/' + hash + '/header');
-    return response3.text();
+    const hash = await this.externalService.getBlockHash(height);
+    return this.externalService.getBlockHeader(hash);
   }
 
   private async getCurrentHeight() {
-    const response = await fetch('https://blockstream.info/api/blocks/tip/height');
-    return parseInt(await response.text(), 10);
+    return this.externalService.getTipHeight();
   }
 
   private async updateFeerate() {
     this.logToGeneralLog('updating feerate');
     try {
-      const response = await fetch('https://blockstream.info/api/fee-estimates');
-      const json = await response.json();
-
-      const blockFast = '2'; // indexes in json object
-      const blockMedium = '6';
-      const blockSlow = '144';
-
-      if (json[blockFast] && json[blockMedium] && json[blockSlow]) {
-        const feerateFast = Math.round(json[blockFast]);
-        const feerateMedium = Math.round(json[blockMedium]);
-        const feerateSlow = Math.round(json[blockSlow]);
-        await this.setFeerate(Math.max(feerateFast, 2), Math.max(feerateMedium, 2), Math.max(feerateSlow, 2));
-      } else {
-        throw new Error('Invalid feerate data:' + JSON.stringify(json));
-      }
+      const feeRates = await this.externalService.getFeeEstimates();
+      await this.setFeerate(feeRates.fast, feeRates.medium, feeRates.slow);
     } catch (error) {
       console.warn('updateFeerate() failed:', error);
       this.logToGeneralLog('updateFeerate() failed:', error);
@@ -539,10 +526,8 @@ class RnLdkImplementation {
   private async updateBestBlock() {
     this.logToGeneralLog('updating best block');
     const height = await this.getCurrentHeight();
-    const response2 = await fetch('https://blockstream.info/api/block-height/' + height);
-    const hash = await response2.text();
-    const response3 = await fetch('https://blockstream.info/api/block/' + hash + '/header');
-    const headerHex = await response3.text();
+    const hash = await this.externalService.getBlockHash(height);
+    const headerHex = await this.externalService.getBlockHeader(hash);
     console.log('updateBestBlock():', { headerHex, height });
     this.logToGeneralLog('updateBestBlock():', { headerHex, height });
     return RnLdkNative.updateBestBlock(headerHex, height);
@@ -579,10 +564,8 @@ class RnLdkImplementation {
       if (hex) monitorHexes.push(hex);
     }
 
-    const response = await fetch('https://blockstream.info/api/blocks/tip/height');
-    const blockchainTipHeight = parseInt(await response.text(), 10);
-    const response2 = await fetch('https://blockstream.info/api/block-height/' + blockchainTipHeight);
-    const blockchainTipHashHex = await response2.text();
+    const blockchainTipHeight = await this.externalService.getTipHeight();
+    const blockchainTipHashHex = await this.externalService.getBlockHash(blockchainTipHeight);
 
     const serializedChannelManagerHex = (await this.getItem(RnLdkImplementation.CHANNEL_MANAGER_PREFIX)) || '';
     this.logToGeneralLog('starting with', { blockchainTipHeight, blockchainTipHashHex, serializedChannelManagerHex, monitorHexes: monitorHexes.join(',') });
