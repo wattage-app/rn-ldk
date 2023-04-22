@@ -2,6 +2,7 @@ import { NativeEventEmitter, NativeModules, Alert } from 'react-native';
 import utils from './util';
 import type { BitcoinTransaction, BitcoinTransactionMerkleProof, ExternalService } from './interfaces';
 import { BlockstreamApi } from './blockstream';
+import { PaymentRouteGenerator } from './routes';
 const { RnLdk: RnLdkNative } = NativeModules;
 const pckg = require('../package.json');
 
@@ -733,23 +734,25 @@ class RnLdkImplementation {
    * @param bolt11 Invoice string
    * @param numSatoshis Amount in sats in case it's a zero-amount invoice
    */
-  async sendPayment(bolt11: string, numSatoshis: number = 666): Promise<boolean> {
+  async sendPayment(bolt11: string): Promise<boolean> {
     if (!this.started) throw new Error('LDK not yet started');
-    this.logToGeneralLog('sendPayment():', { bolt11, numSatoshis });
+    this.logToGeneralLog('sendPayment():', { bolt11 });
     await this.updateBestBlock();
     const usableChannels = await this.listUsableChannels();
     // const usableChannels = await this.listChannels(); // FIXME debug only
     if (usableChannels.length === 0) throw new Error('No usable channels');
 
     const decoded = await this.decodeInvoice(bolt11);
+    
     if (isNaN(parseInt(decoded.millisatoshis, 10))) {
-      decoded.millisatoshis = numSatoshis * 1000; // free amount invoice
+      console.warn("Cannot send payment: invoice doesn't have amount")
+      return false;
     }
+
+    const numSatoshis = decoded.millisatoshis = parseInt(decoded.millisatoshis, 10) / 1000;
     let payment_hash = '';
     let min_final_cltv_expiry = 144;
     let payment_secret = '';
-    let shortChannelId = '';
-    let weAreGonaRouteThrough = '';
 
     for (const tag of decoded.tags) {
       if (tag.tagName === 'payment_hash') payment_hash = tag.data;
@@ -761,63 +764,25 @@ class RnLdkImplementation {
     if (!payment_hash) throw new Error('No payment_hash');
     if (!payment_secret) throw new Error('No payment_secret');
 
-    for (const channel of usableChannels) {
-      if (parseInt(channel.outbound_capacity_msat, 10) >= parseInt(decoded.millisatoshis, 10)) {
-        if (channel.remote_node_id === decoded.payeeNodeKey) {
-          // we are paying to our direct neighbor
-          return RnLdkNative.sendPayment(decoded.payeeNodeKey, payment_hash, payment_secret, channel.short_channel_id, parseInt(decoded.millisatoshis, 10), min_final_cltv_expiry, '');
-        }
+    const router = new PaymentRouteGenerator(payment_hash, numSatoshis, usableChannels[0])
+    const route = await router.generate()
 
-        shortChannelId = channel.short_channel_id;
-        weAreGonaRouteThrough = channel.remote_node_id;
-        break;
-      }
-    }
-
-    if (shortChannelId === '') throw new Error('No usable channel with enough outbound capacity');
-
-    // otherwise lets plot a route from our neighbor we are going to pay through to destination
-    // using public queryroute api
-
-    const from = weAreGonaRouteThrough;
-    const to = decoded.payeeNodeKey;
-
-    let jsonRoutes;
-    let hopFees;
-    let url = '';
-    try {
-      const amtSat = Math.round(parseInt(decoded.millisatoshis, 10) / 1000);
-      url = `http://lndhub.herokuapp.com/queryroutes/${from}/${to}/${amtSat}`;
-      this.logToGeneralLog('querying route via', url);
-      let responseRoute = await fetch(url);
-      jsonRoutes = await responseRoute.json();
-      if (jsonRoutes && jsonRoutes.routes && jsonRoutes.routes[0] && jsonRoutes.routes[0].hops) {
-        for (let hop of jsonRoutes.routes[0].hops) {
-          const url2 = `https://lndhub.herokuapp.com/getchaninfo/${hop.chan_id}`;
-          hopFees = await (await fetch(url2)).json();
-          this.logToGeneralLog('hopFees=', hopFees, { url2 });
-          break;
-          // breaking because we assume that outgoing chan for our routing node gona have the same fee policy
-          // as our own channel with this routing node
-        }
-      } else throw new Error('Could not find route');
-    } catch (_) {
-      throw new Error('Could not find route');
-    }
-
-    const ldkRoute = utils.lndRoutetoLdkRoute(jsonRoutes, hopFees, shortChannelId, min_final_cltv_expiry);
-
-    this.logToGeneralLog('got route:', JSON.stringify(jsonRoutes, null, 2));
-    this.logToGeneralLog('got LDK route:', JSON.stringify(ldkRoute, null, 2));
+    console.log(
+      decoded.payeeNodeKey,
+      route.short_channel_id,
+      route.payment_value_msat,
+      min_final_cltv_expiry,
+      JSON.stringify(route.ldk_routes, null, 2)
+    )
 
     return RnLdkNative.sendPayment(
-      decoded.payeeNodeKey /* not really needed in this scenario */,
+      decoded.payeeNodeKey,
       payment_hash,
       payment_secret,
-      shortChannelId /* not really needed in this scenario */,
-      parseInt(decoded.millisatoshis, 10),
-      min_final_cltv_expiry /* not really needed in this scenario */,
-      JSON.stringify(ldkRoute, null, 2)
+      route.short_channel_id,
+      route.payment_value_msat,
+      min_final_cltv_expiry,
+      JSON.stringify(route.ldk_routes, null, 2)
     );
   }
 
