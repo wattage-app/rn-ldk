@@ -43,7 +43,7 @@ class MyFeeEstimator: FeeEstimator {
 class MyLogger: Logger {
     override func log(record: Record) {
         let level = record.get_level()
-        if level == LDKLevel_Gossip {
+        if level == LDKLevel_Gossip || level == LDKLevel_Trace {
             return
         }
         let recordString = "\(record.get_args())"
@@ -739,9 +739,7 @@ class RnLdk: NSObject {
         let unspendable_punishment_reserve = it.get_unspendable_punishment_reserve().getValue() ?? 0;
 
         var channelObject = "{"
-        // bytesToHex32Reversed(bytes: array_to_tuple32(array: it.get_channel_id()))
-
-        channelObject += "\"channel_id\":" + "\"" + bytesToHex32Reversed(bytes: array_to_tuple32(array: it.get_channel_id())) + "\","
+        channelObject += "\"channel_id\":" + "\"" + bytesToHex(bytes: it.get_channel_id()) + "\","
         channelObject += "\"channel_value_satoshis\":" + String(it.get_channel_value_satoshis()) + ","
         channelObject += "\"inbound_capacity_msat\":" + String(it.get_inbound_capacity_msat()) + ","
         channelObject += "\"outbound_capacity_msat\":" + String(it.get_outbound_capacity_msat()) + ","
@@ -780,15 +778,15 @@ class RnLdk: NSObject {
 
     @objc
     func setFeerate(_ newFeerateFast: NSNumber, newFeerateMedium: NSNumber, newFeerateSlow: NSNumber, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        if (Int(truncating: newFeerateFast) < 300) {
+        if (Int(truncating: newFeerateFast) < 250) {
             let error = NSError(domain: "newFeerateFast", code: 1, userInfo: nil)
             return reject("newFeerateFast", "Too Small",  error)
         }
-        if (Int(truncating: newFeerateMedium) < 300) {
+        if (Int(truncating: newFeerateMedium) < 250) {
             let error = NSError(domain: "newFeerateMedium", code: 1, userInfo: nil)
             return reject("newFeerateMedium", "Too Small",  error)
         }
-        if (Int(truncating: newFeerateSlow) < 300) {
+        if (Int(truncating: newFeerateSlow) < 250) {
             let error = NSError(domain: "newFeerateSlow", code: 1, userInfo: nil)
             return reject("newFeerateSlow", "Too Small",  error)
         }
@@ -1047,8 +1045,8 @@ func handleEvent(event: Event) {
         }
 
         if let getValueAsProcessingError = reason.getValueAsProcessingError() {
+            print("ReactNativeLDK ChannelClosed ProcessingError: " + getValueAsProcessingError.getErr())
             params["reason"] = "ProcessingError"
-            params["text"] = getValueAsProcessingError.getErr()
         }
 
         sendEvent(eventName: MARKER_CHANNEL_CLOSED, eventBody: params)
