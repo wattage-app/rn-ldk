@@ -60,6 +60,19 @@ export interface BitcoinFeeEstimates {
     slow: number;
 }
 
+export interface DecodedInvoice {
+    payee_pubkey: string;
+    millisatoshis: number;
+    tags: {
+        payment_hash: string;
+        payment_secret: string;
+        description: string;
+        expiry_time: number;
+        min_final_cltv_expiry: number;
+        features: string;
+    }
+}
+
 export interface ExternalService {
     getAddressTransactions(address: string): Promise<BitcoinTransaction[]>;
     getTransaction(txid: string): Promise<BitcoinTransaction>;
@@ -71,6 +84,8 @@ export interface ExternalService {
     getBlockHeader(hash: string): Promise<any>;
     getTipHeight(): Promise<number>;
     getFeeEstimates(): Promise<BitcoinFeeEstimates>;
+    scriptToAddress(script: string): Promise<string>;
+    decodeInvoice(invoice: string): Promise<DecodedInvoice>;
 }
 
 export interface RouteQuery {

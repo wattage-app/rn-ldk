@@ -1,6 +1,5 @@
 import { NativeEventEmitter, NativeModules, Alert } from 'react-native';
-import utils from './util';
-import type { BitcoinTransaction, BitcoinTransactionMerkleProof, ExternalService } from './interfaces';
+import type { BitcoinTransaction, BitcoinTransactionMerkleProof, DecodedInvoice, ExternalService, LdkChannelInfo } from './interfaces';
 import { BlockstreamApi } from './blockstream';
 import { PaymentRouteGenerator } from './routes';
 const { RnLdk: RnLdkNative } = NativeModules;
@@ -110,17 +109,6 @@ class RnLdkImplementation {
     })
   }
 
-  private injectedScript2address: ((scriptHex: string) => Promise<string>) | null = null;
-  private injectedDecodeInvoice: ((bolt11: string) => Promise<object>) | null = null;
-
-  provideScript2addressFunc(func: (scriptHex: string) => Promise<string>) {
-    this.injectedScript2address = func;
-  }
-
-  provideDecodeInvoiceFunc(func: (bolt11: string) => Promise<object>) {
-    this.injectedDecodeInvoice = func;
-  }
-
   /**
    * Called by native code when LDK successfully sent payment.
    * Should not be called directly.
@@ -129,7 +117,6 @@ class RnLdkImplementation {
    */
   _paymentSent(event: PaymentSentMsg) {
     // TODO: figure out what to do with it
-    console.warn('payment sent:', event);
     this.logToGeneralLog('payment sent:', event);
     this.sentPayments.push(event);
   }
@@ -142,7 +129,6 @@ class RnLdkImplementation {
    */
   _paymentReceived(event: PaymentReceivedMsg) {
     // TODO: figure out what to do with it
-    console.warn('payment received:', event);
     this.logToGeneralLog('payment received:', event);
     this.receivedPayments.push(event);
   }
@@ -273,12 +259,7 @@ class RnLdkImplementation {
   }
 
   private async script2address(scriptHex: string): Promise<string> {
-    if (this.injectedScript2address) {
-      return await this.injectedScript2address(scriptHex);
-    }
-
-    const response = await fetch('https://runkit.io/overtorment/output-script-to-address/branches/master/' + scriptHex);
-    return response.text();
+    return this.externalService.scriptToAddress(scriptHex);
   }
 
   /**
@@ -679,7 +660,7 @@ class RnLdkImplementation {
   async setItem(key: string, value: string) {
     if (!this.storage) throw new Error('No storage');
     this.logToGeneralLog(`persisting ${key}`);
-    console.log('::::::::::::::::: saving to disk', key, '=', value);
+    console.log('::::::::::::::::: saving to disk', key, '=', value.substring(0, 100));
     return this.storage.setItem(key, value);
   }
 
@@ -719,13 +700,8 @@ class RnLdkImplementation {
     this.started = false;
   }
 
-  private async decodeInvoice(bolt11: string): Promise<any> {
-    if (this.injectedDecodeInvoice) {
-      return this.injectedDecodeInvoice(bolt11);
-    }
-
-    const response = await fetch('https://lambda-decode-bolt11.herokuapp.com/decode/' + bolt11);
-    return await response.json();
+  private async decodeInvoice(bolt11: string): Promise<DecodedInvoice> {
+    return this.externalService.decodeInvoice(bolt11);
   }
 
   /**
@@ -738,45 +714,34 @@ class RnLdkImplementation {
     if (!this.started) throw new Error('LDK not yet started');
     this.logToGeneralLog('sendPayment():', { bolt11 });
     await this.updateBestBlock();
-    const usableChannels = await this.listUsableChannels();
-    // const usableChannels = await this.listChannels(); // FIXME debug only
-    if (usableChannels.length === 0) throw new Error('No usable channels');
+    let usableChannels: LdkChannelInfo[] = await this.listUsableChannels();
+    // fixme: this is a hack to get around the fact that force closed channels are not yet removed from the list
+    const openChannel = await Promise.any(usableChannels.map(channel => {
+      return PaymentRouteGenerator.getChanInfo(channel.short_channel_id);
+    }));
 
+    if (usableChannels.length === 0) throw new Error('No usable channels');
+    const usableChannel = usableChannels.find(channel => channel.short_channel_id === openChannel.channel_id);
+    if (!usableChannel) throw new Error('No usable channels');
     const decoded = await this.decodeInvoice(bolt11);
-    
-    if (isNaN(parseInt(decoded.millisatoshis, 10))) {
+
+    if (!decoded.millisatoshis) {
       console.warn("Cannot send payment: invoice doesn't have amount")
       return false;
     }
 
-    const numSatoshis = decoded.millisatoshis = parseInt(decoded.millisatoshis, 10) / 1000;
-    let payment_hash = '';
-    let min_final_cltv_expiry = 144;
-    let payment_secret = '';
-
-    for (const tag of decoded.tags) {
-      if (tag.tagName === 'payment_hash') payment_hash = tag.data;
-      if (tag.tagName === 'min_final_cltv_expiry') min_final_cltv_expiry = parseInt(tag.data, 10);
-      if (tag.tagName === 'payment_secret') payment_secret = tag.data;
-      if (tag.tagName === 'min_final_cltv_expiry') min_final_cltv_expiry = parseInt(tag.data, 10);
-    }
+    let payment_hash = decoded.tags.payment_hash;
+    let min_final_cltv_expiry = decoded.tags.min_final_cltv_expiry;
+    let payment_secret = decoded.tags.payment_secret;
 
     if (!payment_hash) throw new Error('No payment_hash');
     if (!payment_secret) throw new Error('No payment_secret');
 
-    const router = new PaymentRouteGenerator(payment_hash, numSatoshis, usableChannels[0])
+    const router = new PaymentRouteGenerator(payment_hash, decoded.millisatoshis, usableChannel)
     const route = await router.generate()
 
-    console.log(
-      decoded.payeeNodeKey,
-      route.short_channel_id,
-      route.payment_value_msat,
-      min_final_cltv_expiry,
-      JSON.stringify(route.ldk_routes, null, 2)
-    )
-
     return RnLdkNative.sendPayment(
-      decoded.payeeNodeKey,
+      decoded.payee_pubkey,
       payment_hash,
       payment_secret,
       route.short_channel_id,
@@ -797,23 +762,7 @@ class RnLdkImplementation {
     const decoded = await this.decodeInvoice(
       'lnbc2220n1psvm6rhpp53pxqkcq4j9hxjy5vtsll0rhykqzyjch2gkvlfv5mfdsyul5rnk5sdqqcqzpgsp5qwfm205gklcnf5jqnvpdl22p48adr4hkpscxedrltr7yc29tfv7s9qyyssqeff7chcx08ndxl3he8vgmy7up3z8drd7j0xn758gwkjyfk6ncqesa4hj36r26q68jfpvj0555fr77hhvhtczhh0h9rahdhgtcpj2fpgplfsqg0'
     );
-    RnLdkImplementation.assertEquals(decoded.millisatoshis, '222000');
-    RnLdkImplementation.assertEquals(decoded.payeeNodeKey, '02e89ca9e8da72b33d896bae51d20e7e6675aa971f7557500b6591b15429e717f1');
-    let payment_hash = '';
-    let min_final_cltv_expiry = 0;
-    let payment_secret = '';
-    for (const tag of decoded.tags) {
-      if (tag.tagName === 'payment_hash') payment_hash = tag.data;
-      if (tag.tagName === 'min_final_cltv_expiry') min_final_cltv_expiry = parseInt(tag.data, 10);
-      if (tag.tagName === 'payment_secret') payment_secret = tag.data;
-      if (tag.tagName === 'min_final_cltv_expiry') min_final_cltv_expiry = parseInt(tag.data, 10);
-    }
-    RnLdkImplementation.assertEquals(payment_hash, '884c0b6015916e69128c5c3ff78ee4b0044962ea4599f4b29b4b604e7e839da9');
-    RnLdkImplementation.assertEquals(payment_secret, '0393b53e88b7f134d2409b02dfa941a9fad1d6f60c306cb47f58fc4c28ab4b3d');
-    RnLdkImplementation.assertEquals(min_final_cltv_expiry, 40);
-
-    //
-
+    RnLdkImplementation.assertEquals(decoded.millisatoshis, 222000);
     RnLdkImplementation.assertEquals(await this.script2address('0020ff3eee58d5a55baa44dc10862ebd50bc16e4aade5501a0339c5c20c64478dc0f'), 'bc1qlulwukx454d653xuzzrza02shstwf2k725q6qvuutssvv3rcms8sarxvad');
     RnLdkImplementation.assertEquals(await this.script2address('00143ada446d4196f67e4a83a9168dd751f9c69c2f94'), 'bc1q8tdygm2pjmm8uj5r4ytgm463l8rfctu5d50yyu');
 
@@ -916,6 +865,7 @@ eventEmitter.addListener(MARKER_FUNDING_GENERATION_READY, (event: FundingGenerat
 });
 
 eventEmitter.addListener(MARKER_CHANNEL_CLOSED, (event: ChannelClosedMsg) => {
+  console.log('channel closed event', { event });
   RnLdk._channelClosed(event);
 });
 

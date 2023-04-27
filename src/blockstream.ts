@@ -1,13 +1,33 @@
-import type { BitcoinFeeEstimates, BitcoinTransaction, BitcoinTransactionMerkleProof, ExternalService } from "./interfaces";
+import type { BitcoinFeeEstimates, BitcoinTransaction, BitcoinTransactionMerkleProof, DecodedInvoice, ExternalService } from "./interfaces";
 
 const mainnetApiUrl = "https://blockstream.info/api";
 const testnetApiUrl = "https://blockstream.info/testnet/api";
+const wattageApiUrl = "https://squid-app-8win6.ondigitalocean.app";
 
 export class BlockstreamApi implements ExternalService {
+    testnet: boolean;
     _apiUrl: string;
 
     constructor({ testnet }: { testnet: boolean }) {
+        this.testnet = testnet;
         this._apiUrl = testnet ? testnetApiUrl : mainnetApiUrl;
+    }
+    async scriptToAddress(script: string): Promise<string> {
+        const network = this.testnet ? "testnet" : "mainnet";
+        const res = await fetch(`${wattageApiUrl}/script-to-address/${network}/${script}`);
+        
+        return await res.text();
+    }
+    async decodeInvoice(invoice: string): Promise<DecodedInvoice> {
+        const res = await fetch(`${wattageApiUrl}/decode-invoice`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ invoice }),
+        });
+        
+        return await res.json(); 
     }
 
     _getJson(path: string): Promise<any> {
@@ -56,8 +76,7 @@ export class BlockstreamApi implements ExternalService {
         const slow = response["144"];
         
         const processEstimate = (estimate: number) => {
-            estimate = Math.round(estimate);
-            return Math.max(estimate, 2);
+            return Math.max(estimate, 1.01); // slighting increase the fee to avoid relay fee errors
         };
 
         return { 

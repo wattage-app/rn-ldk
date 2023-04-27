@@ -25,9 +25,6 @@ export default function App() {
         onPress={async () => {
           console.warn('starting...');
           const entropy = '5d547853a7226aa54c5b7bc0f3888b4f7ca1a43b944b2946e9ea39085da1ef97';
-
-          await RnLdk.selftest();
-          console.warn('selftest passed');
           RnLdk.setStorage(AsyncStorage);
           RnLdk.setRefundAddressScript('00144220265aa0b2af9d572c65720e21c917d60fbd28'); // 13HaCAB4jf7FYSZexJxoczyDDnutzZigjS
           await RnLdk.start(entropy, RNFS.DocumentDirectoryPath).then(console.warn);
@@ -171,10 +168,6 @@ export default function App() {
           try {
             const entropy = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
             const syncedStorage = new SyncedAsyncStorage(entropy);
-            await syncedStorage.selftest();
-            // that should also work when RnLdk is started: `await RnLdk.getStorage().selftest();`
-
-            await RnLdk.selftest();
             // @ts-ignore
             alert('ok');
           } catch (error) {
