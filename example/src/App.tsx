@@ -9,7 +9,7 @@ const RNFS = require('react-native-fs');
 
 export default function App() {
   const [result, setResult] = React.useState<number | undefined>();
-  const [text, onChangeText] = React.useState<string>('');
+  const [text, onChangeText] = React.useState<string>('heres some text');
 
   React.useEffect(() => {
     RnLdk.getVersion().then(setResult);
@@ -24,16 +24,9 @@ export default function App() {
       <Button
         onPress={async () => {
           console.warn('starting...');
-          const entropy = '8b626e47cf7f878f86f782354234623462346234623462343246b2eb118712e8';
-
-          const syncedStorage = new SyncedAsyncStorage(entropy);
-          await syncedStorage.selftest();
-          await RnLdk.selftest();
-          console.warn('selftest passed');
-          await syncedStorage.synchronize();
-
-          RnLdk.setStorage(syncedStorage);
-          RnLdk.setRefundAddressScript('76a91419129d53e6319baf19dba059bead166df90ab8f588ac'); // 13HaCAB4jf7FYSZexJxoczyDDnutzZigjS
+          const entropy = '5d547853a7226aa54c5b7bc0f3888b4f7ca1a43b944b2946e9ea39085da1ef97';
+          RnLdk.setStorage(AsyncStorage);
+          RnLdk.setRefundAddressScript('00144220265aa0b2af9d572c65720e21c917d60fbd28'); // 13HaCAB4jf7FYSZexJxoczyDDnutzZigjS
           await RnLdk.start(entropy, RNFS.DocumentDirectoryPath).then(console.warn);
         }}
         title="Start"
@@ -50,10 +43,10 @@ export default function App() {
       />
 
       <Button
-        onPress={() => {
-          // RnLdk.connectPeer('02e89ca9e8da72b33d896bae51d20e7e6675aa971f7557500b6591b15429e717f1', '165.227.95.104', 9735).then(console.warn); // lnd1
-          RnLdk.connectPeer('03abf6f44c355dec0d5aa155bdbdd6e0c8fefe318eff402de65c6eb2e1be55dc3e', '3.132.230.42', 9735).then(console.warn); // opennode
-          RnLdk.connectPeer('030c3f19d742ca294a55c00376b3b355c3c90d61c6b6b39554dbc7ac19b141c14f', '52.50.244.44', 9735).then(console.warn); // bitrefill
+        onPress={async () => {
+          // wattage testnet node
+          // 0252bdd5db4729bab7266eeb7252354c8b08cc8e89cc489dd765b6fec8d448d6a0@67.207.84.172:9735
+          await RnLdk.connectPeer('0252bdd5db4729bab7266eeb7252354c8b08cc8e89cc489dd765b6fec8d448d6a0', '67.207.84.172', 9735).then(console.warn); // bitrefill
         }}
         title="connect peer"
         color="#841584"
@@ -85,7 +78,7 @@ export default function App() {
 
       <Button
         onPress={async () => {
-          const address = await RnLdk.openChannelStep1('02e89ca9e8da72b33d896bae51d20e7e6675aa971f7557500b6591b15429e717f1', 100000); // lnd1
+          const address = await RnLdk.openChannelStep1('0252bdd5db4729bab7266eeb7252354c8b08cc8e89cc489dd765b6fec8d448d6a0', 100000).catch(console.warn);
           console.log(address + '');
           onChangeText(address + '');
         }}
@@ -98,7 +91,7 @@ export default function App() {
       <Button
         onPress={() => {
           if (!text) return;
-          RnLdk.openChannelStep2(text).then(console.warn);
+          RnLdk.openChannelStep2(text, '0252bdd5db4729bab7266eeb7252354c8b08cc8e89cc489dd765b6fec8d448d6a0').then(console.warn);
         }}
         title="openChannelStep2"
         color="#841584"
@@ -135,7 +128,8 @@ export default function App() {
 
       <Button
         onPress={async () => {
-          await RnLdk.closeChannelCooperatively(text);
+          if (!text) return Alert.alert('no channel id provided');
+          await RnLdk.closeChannelCooperatively(text, '0252bdd5db4729bab7266eeb7252354c8b08cc8e89cc489dd765b6fec8d448d6a0');
         }}
         title="closeChannelCooperatively"
         color="#841584"
@@ -162,7 +156,7 @@ export default function App() {
 
       <Button
         onPress={async () => {
-          const bolt11 = await RnLdk.addInvoice(2000, 'Hello LDK');
+          const bolt11 = await RnLdk.addInvoice(2000000, 'Hello LDK');
           console.warn(bolt11);
         }}
         title="add invoice"
@@ -174,10 +168,6 @@ export default function App() {
           try {
             const entropy = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
             const syncedStorage = new SyncedAsyncStorage(entropy);
-            await syncedStorage.selftest();
-            // that should also work when RnLdk is started: `await RnLdk.getStorage().selftest();`
-
-            await RnLdk.selftest();
             // @ts-ignore
             alert('ok');
           } catch (error) {

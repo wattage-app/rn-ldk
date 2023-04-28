@@ -43,7 +43,7 @@ class MyFeeEstimator: FeeEstimator {
 class MyLogger: Logger {
     override func log(record: Record) {
         let level = record.get_level()
-        if level == LDKLevel_Gossip {
+        if level == LDKLevel_Gossip || level == LDKLevel_Trace {
             return
         }
         let recordString = "\(record.get_args())"
@@ -188,7 +188,7 @@ class RnLdk: NSObject {
 
         let handshake = ChannelHandshakeConfig()
         handshake.set_minimum_depth(val: 1)
-        handshake.set_announced_channel(val: false)
+        handshake.set_announced_channel(val: true)
         uc.set_channel_handshake_config(val: handshake)
         uc.set_accept_inbound_channels(val: true)
         uc.set_channel_config(val: newChannelConfig)
@@ -223,7 +223,7 @@ class RnLdk: NSObject {
         keys_manager = KeysManager(seed: seed, starting_time_secs: timestamp_seconds, starting_time_nanos: timestamp_nanos)
 
         // initialize graph sync #########################################################################
-
+        // todo: pass in genesis hash
         print("ReactNativeLDK: using network graph path: \(networkGraphPath)");
         if fileManager.fileExists(atPath: networkGraphPath), let file = try? Data(contentsOf: URL(fileURLWithPath: networkGraphPath)) {
             print("ReactNativeLDK: loading network graph...");
@@ -235,12 +235,12 @@ class RnLdk: NSObject {
             } else {
                 print("ReactNativeLDK: network graph failed to load, creating from scratch")
                 print(String(describing: readResult.getError()))
-                router = NetworkGraph(genesis_hash: hexStringToByteArray("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").reversed(), logger: logger)
+                router = NetworkGraph(genesis_hash: hexStringToByteArray("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").reversed(), logger: logger)
             }
         } else {
             // firif (networkGraphPath != "") {st run, creating from scratch
             print("ReactNativeLDK: network graph first run, creating from scratch")
-            router = NetworkGraph(genesis_hash: hexStringToByteArray("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").reversed(), logger: logger)
+            router = NetworkGraph(genesis_hash: hexStringToByteArray("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943").reversed(), logger: logger)
         }
 
 
@@ -292,7 +292,7 @@ class RnLdk: NSObject {
                 return
             }
         } else {
-            channel_manager_constructor = ChannelManagerConstructor(network: LDKNetwork_Bitcoin, config: uc, current_blockchain_tip_hash: hexStringToByteArray(blockchainTipHashHex), current_blockchain_tip_height: UInt32(truncating: blockchainTipHeight), keys_interface: keysInterface, fee_estimator: feeEstimator, chain_monitor: chainMonitor, net_graph: router, tx_broadcaster: broadcaster, logger: logger)
+            channel_manager_constructor = ChannelManagerConstructor(network: LDKNetwork_Testnet, config: uc, current_blockchain_tip_hash: hexStringToByteArray(blockchainTipHashHex), current_blockchain_tip_height: UInt32(truncating: blockchainTipHeight), keys_interface: keysInterface, fee_estimator: feeEstimator, chain_monitor: chainMonitor, net_graph: router, tx_broadcaster: broadcaster, logger: logger)
         }
 
         channel_manager = channel_manager_constructor?.channelManager
@@ -518,7 +518,7 @@ class RnLdk: NSObject {
             let error = NSError(domain: "addInvoice", code: 1, userInfo: nil)
             return  reject("addInvoice", "No channel_manager initialized",  error)
         }
-        let invoiceResult = Bindings.swift_create_invoice_from_channelmanager(channelmanager: channel_manager, keys_manager: keys_manager.as_KeysInterface(), network: LDKCurrency_Bitcoin, amt_msat: Bindings.Option_u64Z(value: UInt64(exactly: amtMsat)), description: description, invoice_expiry_delta_secs: 24 * 3600)
+        let invoiceResult = Bindings.swift_create_invoice_from_channelmanager(channelmanager: channel_manager, keys_manager: keys_manager.as_KeysInterface(), network: LDKCurrency_BitcoinTestnet, amt_msat: Bindings.Option_u64Z(value: UInt64(exactly: amtMsat)), description: description, invoice_expiry_delta_secs: 24 * 3600)
 
         if let invoice = invoiceResult.getValue() {
             resolve(invoice.to_str())
@@ -749,9 +749,8 @@ class RnLdk: NSObject {
         channelObject += "\"is_public\":" + (it.get_is_public() ? "true" : "false") + ","
         channelObject += "\"remote_node_id\":" + "\"" + bytesToHex(bytes: it.get_counterparty().get_node_id()) + "\"," // @deprecated fixme
 
-        // fixme:
         if let funding_txo = it.get_funding_txo() {
-            channelObject += "\"funding_txo_txid\":" + "\"" + bytesToHex(bytes: funding_txo.get_txid()) + "\","
+            channelObject += "\"funding_txo_txid\":" + "\"" + bytesToHex32Reversed(bytes: array_to_tuple32(array: funding_txo.get_txid())) + "\","
             channelObject += "\"funding_txo_index\":" + String(funding_txo.get_index()) + ","
         }else{
             channelObject += "\"funding_txo_txid\": null,"
@@ -763,8 +762,7 @@ class RnLdk: NSObject {
         channelObject += "\"unspendable_punishment_reserve\":" + String(unspendable_punishment_reserve) + ","
         channelObject += "\"confirmations_required\":" + String(confirmations_required) + ","
         channelObject += "\"force_close_spend_delay\":" + String(force_close_spend_delay) + ","
-        channelObject += "\"user_id\":" + String(it.get_user_channel_id()) + ","
-        channelObject += "\"counterparty_node_id\":" + bytesToHex(bytes: it.get_counterparty().get_node_id())
+        channelObject += "\"user_id\":" + String(it.get_user_channel_id())
         channelObject += "}"
 
         return channelObject
@@ -778,15 +776,15 @@ class RnLdk: NSObject {
 
     @objc
     func setFeerate(_ newFeerateFast: NSNumber, newFeerateMedium: NSNumber, newFeerateSlow: NSNumber, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        if (Int(truncating: newFeerateFast) < 300) {
+        if (Int(truncating: newFeerateFast) < 250) {
             let error = NSError(domain: "newFeerateFast", code: 1, userInfo: nil)
             return reject("newFeerateFast", "Too Small",  error)
         }
-        if (Int(truncating: newFeerateMedium) < 300) {
+        if (Int(truncating: newFeerateMedium) < 250) {
             let error = NSError(domain: "newFeerateMedium", code: 1, userInfo: nil)
             return reject("newFeerateMedium", "Too Small",  error)
         }
-        if (Int(truncating: newFeerateSlow) < 300) {
+        if (Int(truncating: newFeerateSlow) < 250) {
             let error = NSError(domain: "newFeerateSlow", code: 1, userInfo: nil)
             return reject("newFeerateSlow", "Too Small",  error)
         }
@@ -1045,8 +1043,8 @@ func handleEvent(event: Event) {
         }
 
         if let getValueAsProcessingError = reason.getValueAsProcessingError() {
+            print("ReactNativeLDK ChannelClosed ProcessingError: " + getValueAsProcessingError.getErr())
             params["reason"] = "ProcessingError"
-            params["text"] = getValueAsProcessingError.getErr()
         }
 
         sendEvent(eventName: MARKER_CHANNEL_CLOSED, eventBody: params)

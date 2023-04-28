@@ -1,5 +1,7 @@
 import { NativeEventEmitter, NativeModules, Alert } from 'react-native';
-import utils from './util';
+import type { BitcoinTransaction, BitcoinTransactionMerkleProof, DecodedInvoice, ExternalService, LdkChannelInfo } from './interfaces';
+import { ExternalApi } from './third_party';
+import { PaymentRouteGenerator } from './routes';
 const { RnLdk: RnLdkNative } = NativeModules;
 const pckg = require('../package.json');
 
@@ -99,15 +101,12 @@ class RnLdkImplementation {
 
   private started = false;
 
-  private injectedScript2address: ((scriptHex: string) => Promise<string>) | null = null;
-  private injectedDecodeInvoice: ((bolt11: string) => Promise<object>) | null = null;
+  private externalService: ExternalService;
 
-  provideScript2addressFunc(func: (scriptHex: string) => Promise<string>) {
-    this.injectedScript2address = func;
-  }
-
-  provideDecodeInvoiceFunc(func: (bolt11: string) => Promise<object>) {
-    this.injectedDecodeInvoice = func;
+  constructor() {
+    this.externalService = new ExternalApi({
+      testnet: true,
+    })
   }
 
   /**
@@ -118,7 +117,6 @@ class RnLdkImplementation {
    */
   _paymentSent(event: PaymentSentMsg) {
     // TODO: figure out what to do with it
-    console.warn('payment sent:', event);
     this.logToGeneralLog('payment sent:', event);
     this.sentPayments.push(event);
   }
@@ -131,7 +129,6 @@ class RnLdkImplementation {
    */
   _paymentReceived(event: PaymentReceivedMsg) {
     // TODO: figure out what to do with it
-    console.warn('payment received:', event);
     this.logToGeneralLog('payment received:', event);
     this.receivedPayments.push(event);
   }
@@ -244,11 +241,7 @@ class RnLdkImplementation {
   async _broadcast(event: BroadcastMsg) {
     this.logToGeneralLog('broadcasting', event);
     try {
-      const response = await fetch('https://blockstream.info/api/tx', {
-        method: 'POST',
-        body: event.txhex,
-      });
-      return await response.text();
+      return await this.externalService.broadcastTransaction(event.txhex);
     } catch (e) {
       console.error(e);
       // @ts-ignore
@@ -266,12 +259,7 @@ class RnLdkImplementation {
   }
 
   private async script2address(scriptHex: string): Promise<string> {
-    if (this.injectedScript2address) {
-      return await this.injectedScript2address(scriptHex);
-    }
-
-    const response = await fetch('https://runkit.io/overtorment/output-script-to-address/branches/master/' + scriptHex);
-    return response.text();
+    return this.externalService.scriptToAddress(scriptHex);
   }
 
   /**
@@ -299,24 +287,22 @@ class RnLdkImplementation {
     this.logToGeneralLog('checkBlockchain() 3/x');
     if (progressCallback) progressCallback(3 / 8);
     for (const regTx of this.registeredTxs) {
-      let json;
+      let json: BitcoinTransaction | undefined;
       try {
-        const response = await fetch('https://blockstream.info/api/tx/' + regTx.txid);
-        json = await response.json();
-      } catch (_) {}
+        json = await this.externalService.getTransaction(regTx.txid);
+      } catch (_) { }
       if (json && json.status && json.status.confirmed && json.status.block_height) {
         // success! tx confirmed, and we need to notify LDK about it
 
-        let jsonPos;
+        let jsonPos: BitcoinTransactionMerkleProof | undefined;
         try {
-          const responsePos = await fetch('https://blockstream.info/api/tx/' + regTx.txid + '/merkle-proof');
-          jsonPos = await responsePos.json();
-        } catch (_) {}
+          jsonPos = await this.externalService.getTransactionMerkleProof(regTx.txid);
+        } catch (_) { }
 
         if (jsonPos && jsonPos.merkle) {
           confirmedBlocks[json.status.block_height + ''] = confirmedBlocks[json.status.block_height + ''] || {};
-          const responseHex = await fetch('https://blockstream.info/api/tx/' + regTx.txid + '/hex');
-          confirmedBlocks[json.status.block_height + ''][jsonPos.pos + ''] = await responseHex.text();
+          const txHex = await this.externalService.getTransactionHex(regTx.txid);
+          confirmedBlocks[json.status.block_height + ''][jsonPos.pos + ''] = txHex
         }
       }
     }
@@ -325,26 +311,24 @@ class RnLdkImplementation {
     this.logToGeneralLog('checkBlockchain() 4/x');
     if (progressCallback) progressCallback(4 / 8);
     for (const regOut of this.registeredOutputs) {
-      let txs: any[] = [];
+      let txs: BitcoinTransaction[] = [];
       try {
         const address = await this.script2address(regOut.script_pubkey);
-        const response = await fetch('https://blockstream.info/api/address/' + address + '/txs');
-        txs = await response.json();
-      } catch (_) {}
+        txs = await this.externalService.getAddressTransactions(address);
+      } catch (_) { }
       for (const tx of txs) {
         if (tx && tx.status && tx.status.confirmed && tx.status.block_height) {
           // got confirmed tx for that output!
 
           let jsonPos;
           try {
-            const responsePos = await fetch('https://blockstream.info/api/tx/' + tx.txid + '/merkle-proof');
-            jsonPos = await responsePos.json();
-          } catch (_) {}
+            jsonPos = await this.externalService.getTransactionMerkleProof(tx.txid);
+          } catch (_) { }
 
           if (jsonPos && jsonPos.merkle) {
-            const responseHex = await fetch('https://blockstream.info/api/tx/' + tx.txid + '/hex');
+            const txHex = await this.externalService.getTransactionHex(tx.txid);
             confirmedBlocks[tx.status.block_height + ''] = confirmedBlocks[tx.status.block_height + ''] || {};
-            confirmedBlocks[tx.status.block_height + ''][jsonPos.pos + ''] = await responseHex.text();
+            confirmedBlocks[tx.status.block_height + ''][jsonPos.pos + ''] = txHex;
           }
         }
       }
@@ -381,8 +365,7 @@ class RnLdkImplementation {
     for (const txid of txidArr) {
       let confirmed = false;
       try {
-        const response = await fetch('https://blockstream.info/api/tx/' + txid + '/merkle-proof');
-        const tx: any = await response.json();
+        const tx: BitcoinTransactionMerkleProof = await this.externalService.getTransactionMerkleProof(txid);
         if (tx && tx.block_height) confirmed = true;
       } catch (_) {
         confirmed = false;
@@ -469,7 +452,9 @@ class RnLdkImplementation {
   async getNodeId(): Promise<string> {
     if (!this.started) throw new Error('LDK not yet started');
     this.logToGeneralLog('getting node id');
-    return RnLdkNative.getNodeId();
+    const nodeId = await RnLdkNative.getNodeId();
+    this.logToGeneralLog('node id', nodeId);
+    return nodeId;
   }
 
   /**
@@ -501,35 +486,19 @@ class RnLdkImplementation {
   }
 
   private async getHeaderHexByHeight(height: number) {
-    const response2 = await fetch('https://blockstream.info/api/block-height/' + height);
-    const hash = await response2.text();
-    const response3 = await fetch('https://blockstream.info/api/block/' + hash + '/header');
-    return response3.text();
+    const hash = await this.externalService.getBlockHash(height);
+    return this.externalService.getBlockHeader(hash);
   }
 
   private async getCurrentHeight() {
-    const response = await fetch('https://blockstream.info/api/blocks/tip/height');
-    return parseInt(await response.text(), 10);
+    return this.externalService.getTipHeight();
   }
 
   private async updateFeerate() {
     this.logToGeneralLog('updating feerate');
     try {
-      const response = await fetch('https://blockstream.info/api/fee-estimates');
-      const json = await response.json();
-
-      const blockFast = '2'; // indexes in json object
-      const blockMedium = '6';
-      const blockSlow = '144';
-
-      if (json[blockFast] && json[blockMedium] && json[blockSlow]) {
-        const feerateFast = Math.round(json[blockFast]);
-        const feerateMedium = Math.round(json[blockMedium]);
-        const feerateSlow = Math.round(json[blockSlow]);
-        await this.setFeerate(Math.max(feerateFast, 2), Math.max(feerateMedium, 2), Math.max(feerateSlow, 2));
-      } else {
-        throw new Error('Invalid feerate data:' + JSON.stringify(json));
-      }
+      const feeRates = await this.externalService.getFeeEstimates();
+      await this.setFeerate(feeRates.fast, feeRates.medium, feeRates.slow);
     } catch (error) {
       console.warn('updateFeerate() failed:', error);
       this.logToGeneralLog('updateFeerate() failed:', error);
@@ -539,10 +508,8 @@ class RnLdkImplementation {
   private async updateBestBlock() {
     this.logToGeneralLog('updating best block');
     const height = await this.getCurrentHeight();
-    const response2 = await fetch('https://blockstream.info/api/block-height/' + height);
-    const hash = await response2.text();
-    const response3 = await fetch('https://blockstream.info/api/block/' + hash + '/header');
-    const headerHex = await response3.text();
+    const hash = await this.externalService.getBlockHash(height);
+    const headerHex = await this.externalService.getBlockHeader(hash);
     console.log('updateBestBlock():', { headerHex, height });
     this.logToGeneralLog('updateBestBlock():', { headerHex, height });
     return RnLdkNative.updateBestBlock(headerHex, height);
@@ -579,10 +546,8 @@ class RnLdkImplementation {
       if (hex) monitorHexes.push(hex);
     }
 
-    const response = await fetch('https://blockstream.info/api/blocks/tip/height');
-    const blockchainTipHeight = parseInt(await response.text(), 10);
-    const response2 = await fetch('https://blockstream.info/api/block-height/' + blockchainTipHeight);
-    const blockchainTipHashHex = await response2.text();
+    const blockchainTipHeight = await this.externalService.getTipHeight();
+    const blockchainTipHashHex = await this.externalService.getBlockHash(blockchainTipHeight);
 
     const serializedChannelManagerHex = (await this.getItem(RnLdkImplementation.CHANNEL_MANAGER_PREFIX)) || '';
     this.logToGeneralLog('starting with', { blockchainTipHeight, blockchainTipHashHex, serializedChannelManagerHex, monitorHexes: monitorHexes.join(',') });
@@ -695,7 +660,7 @@ class RnLdkImplementation {
   async setItem(key: string, value: string) {
     if (!this.storage) throw new Error('No storage');
     this.logToGeneralLog(`persisting ${key}`);
-    console.log('::::::::::::::::: saving to disk', key, '=', value);
+    console.log('::::::::::::::::: saving to disk', key, '=', value.substring(0, 100));
     return this.storage.setItem(key, value);
   }
 
@@ -735,13 +700,8 @@ class RnLdkImplementation {
     this.started = false;
   }
 
-  private async decodeInvoice(bolt11: string): Promise<any> {
-    if (this.injectedDecodeInvoice) {
-      return this.injectedDecodeInvoice(bolt11);
-    }
-
-    const response = await fetch('https://lambda-decode-bolt11.herokuapp.com/decode/' + bolt11);
-    return await response.json();
+  private async decodeInvoice(bolt11: string): Promise<DecodedInvoice> {
+    return this.externalService.decodeInvoice(bolt11);
   }
 
   /**
@@ -750,91 +710,41 @@ class RnLdkImplementation {
    * @param bolt11 Invoice string
    * @param numSatoshis Amount in sats in case it's a zero-amount invoice
    */
-  async sendPayment(bolt11: string, numSatoshis: number = 666): Promise<boolean> {
+  async sendPayment(bolt11: string): Promise<boolean> {
     if (!this.started) throw new Error('LDK not yet started');
-    this.logToGeneralLog('sendPayment():', { bolt11, numSatoshis });
     await this.updateBestBlock();
-    const usableChannels = await this.listUsableChannels();
-    // const usableChannels = await this.listChannels(); // FIXME debug only
-    if (usableChannels.length === 0) throw new Error('No usable channels');
-
-    const decoded = await this.decodeInvoice(bolt11);
-    if (isNaN(parseInt(decoded.millisatoshis, 10))) {
-      decoded.millisatoshis = numSatoshis * 1000; // free amount invoice
-    }
-    let payment_hash = '';
-    let min_final_cltv_expiry = 144;
-    let payment_secret = '';
-    let shortChannelId = '';
-    let weAreGonaRouteThrough = '';
-
-    for (const tag of decoded.tags) {
-      if (tag.tagName === 'payment_hash') payment_hash = tag.data;
-      if (tag.tagName === 'min_final_cltv_expiry') min_final_cltv_expiry = parseInt(tag.data, 10);
-      if (tag.tagName === 'payment_secret') payment_secret = tag.data;
-      if (tag.tagName === 'min_final_cltv_expiry') min_final_cltv_expiry = parseInt(tag.data, 10);
+    const ourNodeId = await RnLdkNative.getNodeId();
+    const invoice = await this.decodeInvoice(bolt11);
+    if (!invoice.payee_pubkey) {
+      throw new Error('Cannot send payment: No payee in invoice');
     }
 
-    if (!payment_hash) throw new Error('No payment_hash');
-    if (!payment_secret) throw new Error('No payment_secret');
-
-    for (const channel of usableChannels) {
-      if (parseInt(channel.outbound_capacity_msat, 10) >= parseInt(decoded.millisatoshis, 10)) {
-        if (channel.remote_node_id === decoded.payeeNodeKey) {
-          // we are paying to our direct neighbor
-          return RnLdkNative.sendPayment(decoded.payeeNodeKey, payment_hash, payment_secret, channel.short_channel_id, parseInt(decoded.millisatoshis, 10), min_final_cltv_expiry, '');
-        }
-
-        shortChannelId = channel.short_channel_id;
-        weAreGonaRouteThrough = channel.remote_node_id;
-        break;
-      }
+    if (!invoice.millisatoshis) {
+      throw new Error('Cannot send payment: No amount in invoice');
     }
 
-    if (shortChannelId === '') throw new Error('No usable channel with enough outbound capacity');
+    let usableChannels: LdkChannelInfo[] = await this.listUsableChannels();
+    if (usableChannels.length === 0) throw new Error('No usable channels are open');
 
-    // otherwise lets plot a route from our neighbor we are going to pay through to destination
-    // using public queryroute api
+    usableChannels = usableChannels.filter(channel => channel.outbound_capacity_msat > invoice.millisatoshis);
+    if (usableChannels.length === 0) throw new Error('No usable channels with enough capacity');
+    
+    // This will basically get the first channel that the external service knows about
+    const openChannel = await Promise.any(usableChannels.map(
+      (channel) => this.externalService.getChannelInfo(channel.short_channel_id))
+    );
 
-    const from = weAreGonaRouteThrough;
-    const to = decoded.payeeNodeKey;
-
-    let jsonRoutes;
-    let hopFees;
-    let url = '';
-    try {
-      const amtSat = Math.round(parseInt(decoded.millisatoshis, 10) / 1000);
-      url = `http://lndhub.herokuapp.com/queryroutes/${from}/${to}/${amtSat}`;
-      this.logToGeneralLog('querying route via', url);
-      let responseRoute = await fetch(url);
-      jsonRoutes = await responseRoute.json();
-      if (jsonRoutes && jsonRoutes.routes && jsonRoutes.routes[0] && jsonRoutes.routes[0].hops) {
-        for (let hop of jsonRoutes.routes[0].hops) {
-          const url2 = `https://lndhub.herokuapp.com/getchaninfo/${hop.chan_id}`;
-          hopFees = await (await fetch(url2)).json();
-          this.logToGeneralLog('hopFees=', hopFees, { url2 });
-          break;
-          // breaking because we assume that outgoing chan for our routing node gona have the same fee policy
-          // as our own channel with this routing node
-        }
-      } else throw new Error('Could not find route');
-    } catch (_) {
-      throw new Error('Could not find route');
-    }
-
-    const ldkRoute = utils.lndRoutetoLdkRoute(jsonRoutes, hopFees, shortChannelId, min_final_cltv_expiry);
-
-    this.logToGeneralLog('got route:', JSON.stringify(jsonRoutes, null, 2));
-    this.logToGeneralLog('got LDK route:', JSON.stringify(ldkRoute, null, 2));
+    const router = new PaymentRouteGenerator(this.externalService, ourNodeId, invoice, openChannel);
+    const routes = await router.generate();
 
     return RnLdkNative.sendPayment(
-      decoded.payeeNodeKey /* not really needed in this scenario */,
-      payment_hash,
-      payment_secret,
-      shortChannelId /* not really needed in this scenario */,
-      parseInt(decoded.millisatoshis, 10),
-      min_final_cltv_expiry /* not really needed in this scenario */,
-      JSON.stringify(ldkRoute, null, 2)
+      invoice.payee_pubkey,
+      invoice.tags.payment_hash,
+      invoice.tags.payment_secret,
+      openChannel.channel_id,
+      invoice.millisatoshis,
+      invoice.tags.min_final_cltv_expiry,
+      JSON.stringify(routes, null, 2)
     );
   }
 
@@ -849,23 +759,7 @@ class RnLdkImplementation {
     const decoded = await this.decodeInvoice(
       'lnbc2220n1psvm6rhpp53pxqkcq4j9hxjy5vtsll0rhykqzyjch2gkvlfv5mfdsyul5rnk5sdqqcqzpgsp5qwfm205gklcnf5jqnvpdl22p48adr4hkpscxedrltr7yc29tfv7s9qyyssqeff7chcx08ndxl3he8vgmy7up3z8drd7j0xn758gwkjyfk6ncqesa4hj36r26q68jfpvj0555fr77hhvhtczhh0h9rahdhgtcpj2fpgplfsqg0'
     );
-    RnLdkImplementation.assertEquals(decoded.millisatoshis, '222000');
-    RnLdkImplementation.assertEquals(decoded.payeeNodeKey, '02e89ca9e8da72b33d896bae51d20e7e6675aa971f7557500b6591b15429e717f1');
-    let payment_hash = '';
-    let min_final_cltv_expiry = 0;
-    let payment_secret = '';
-    for (const tag of decoded.tags) {
-      if (tag.tagName === 'payment_hash') payment_hash = tag.data;
-      if (tag.tagName === 'min_final_cltv_expiry') min_final_cltv_expiry = parseInt(tag.data, 10);
-      if (tag.tagName === 'payment_secret') payment_secret = tag.data;
-      if (tag.tagName === 'min_final_cltv_expiry') min_final_cltv_expiry = parseInt(tag.data, 10);
-    }
-    RnLdkImplementation.assertEquals(payment_hash, '884c0b6015916e69128c5c3ff78ee4b0044962ea4599f4b29b4b604e7e839da9');
-    RnLdkImplementation.assertEquals(payment_secret, '0393b53e88b7f134d2409b02dfa941a9fad1d6f60c306cb47f58fc4c28ab4b3d');
-    RnLdkImplementation.assertEquals(min_final_cltv_expiry, 40);
-
-    //
-
+    RnLdkImplementation.assertEquals(decoded.millisatoshis, 222000);
     RnLdkImplementation.assertEquals(await this.script2address('0020ff3eee58d5a55baa44dc10862ebd50bc16e4aade5501a0339c5c20c64478dc0f'), 'bc1qlulwukx454d653xuzzrza02shstwf2k725q6qvuutssvv3rcms8sarxvad');
     RnLdkImplementation.assertEquals(await this.script2address('00143ada446d4196f67e4a83a9168dd751f9c69c2f94'), 'bc1q8tdygm2pjmm8uj5r4ytgm463l8rfctu5d50yyu');
 
@@ -968,6 +862,7 @@ eventEmitter.addListener(MARKER_FUNDING_GENERATION_READY, (event: FundingGenerat
 });
 
 eventEmitter.addListener(MARKER_CHANNEL_CLOSED, (event: ChannelClosedMsg) => {
+  console.log('channel closed event', { event });
   RnLdk._channelClosed(event);
 });
 
