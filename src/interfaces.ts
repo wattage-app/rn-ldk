@@ -1,4 +1,3 @@
-// interface for BitcoinTransactionInput
 export interface BitcoinTransactionInput {
     txid: string;
     vout: number;
@@ -16,7 +15,6 @@ export interface BitcoinTransactionInput {
     witness: string[];
 }
 
-// interface for BitcoinTransactionOutput
 export interface BitcoinTransactionOutput {
     value: string;
     n: number;
@@ -157,4 +155,11 @@ export interface LdkChannelInfo {
     short_channel_id: string;
     unspendable_punishment_reserve: number;
     user_id: number;
+}
+
+export interface PaymentRoute {
+    destination_pubkey: string;
+    short_channel_id: string;
+    payment_value_msat: number;
+    ldk_routes: LdkRouteHop[];
 }

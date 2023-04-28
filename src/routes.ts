@@ -1,17 +1,4 @@
-import type { ChanInfo, ExternalService, LdkChannelInfo, LdkRouteHop } from "./interfaces";
-
-export interface DecodedInvoiceTags {
-    payment_hash: string;
-    payment_secret: string;
-    min_final_cltv_expiry: number;
-}
-
-export interface PaymentRoute {
-    destination_pubkey: string;
-    short_channel_id: string;
-    payment_value_msat: number;
-    ldk_routes: LdkRouteHop[];
-}
+import type { ChanInfo, ExternalService, LdkChannelInfo, LdkRouteHop, PaymentRoute } from "./interfaces";
 
 export class PaymentRouteGenerator {
     destination_pubkey: string;
