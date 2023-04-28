@@ -749,8 +749,6 @@ class RnLdk: NSObject {
         channelObject += "\"is_public\":" + (it.get_is_public() ? "true" : "false") + ","
         channelObject += "\"remote_node_id\":" + "\"" + bytesToHex(bytes: it.get_counterparty().get_node_id()) + "\"," // @deprecated fixme
 
-        // fixme:
-        // bytesToHex32Reversed(bytes: array_to_tuple32(array: funding_txo.get_txid()))
         if let funding_txo = it.get_funding_txo() {
             channelObject += "\"funding_txo_txid\":" + "\"" + bytesToHex32Reversed(bytes: array_to_tuple32(array: funding_txo.get_txid())) + "\","
             channelObject += "\"funding_txo_index\":" + String(funding_txo.get_index()) + ","
