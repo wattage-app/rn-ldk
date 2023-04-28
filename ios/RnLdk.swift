@@ -14,9 +14,9 @@ let MARKER_FUNDING_GENERATION_READY = "funding_generation_ready"
 let MARKER_CHANNEL_CLOSED = "channel_closed"
 //
 
-var feerate_fast = 1250 // estimate fee rate in BTC/kB
-var feerate_medium = 1250 // estimate fee rate in BTC/kB
-var feerate_slow = 1250 // estimate fee rate in BTC/kB
+var feerate_fast = 7500 // estimate fee rate in BTC/kB
+var feerate_medium = 7500 // estimate fee rate in BTC/kB
+var feerate_slow = 7500 // estimate fee rate in BTC/kB
 
 var refund_address_script = "76a91419129d53e6319baf19dba059bead166df90ab8f588ac"
 
