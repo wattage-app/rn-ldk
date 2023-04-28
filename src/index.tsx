@@ -712,44 +712,39 @@ class RnLdkImplementation {
    */
   async sendPayment(bolt11: string): Promise<boolean> {
     if (!this.started) throw new Error('LDK not yet started');
-    this.logToGeneralLog('sendPayment():', { bolt11 });
     await this.updateBestBlock();
-    // fixme: this is a hack to get around the fact that force closed channels are not yet removed from the list
+    const ourNodeId = await RnLdkNative.getNodeId();
+    const invoice = await this.decodeInvoice(bolt11);
+    if (!invoice.payee_pubkey) {
+      throw new Error('Cannot send payment: No payee in invoice');
+    }
+
+    if (!invoice.millisatoshis) {
+      throw new Error('Cannot send payment: No amount in invoice');
+    }
+
     let usableChannels: LdkChannelInfo[] = await this.listUsableChannels();
+    if (usableChannels.length === 0) throw new Error('No usable channels are open');
+
+    usableChannels = usableChannels.filter(channel => channel.outbound_capacity_msat > invoice.millisatoshis);
+    if (usableChannels.length === 0) throw new Error('No usable channels with enough capacity');
+    
+    // This will basically get the first channel that the external service knows about
     const openChannel = await Promise.any(usableChannels.map(
       (channel) => this.externalService.getChannelInfo(channel.short_channel_id))
     );
 
-    if (usableChannels.length === 0 || !openChannel) throw new Error('No usable channels');
-    const usableChannel = usableChannels.find(channel => {
-      return channel.short_channel_id === openChannel.channel_id.toString();
-    });
-    if (!usableChannel) throw new Error('No usable channels');
-
-    const decoded = await this.decodeInvoice(bolt11);
-    if (!decoded.millisatoshis) {
-      console.warn("Cannot send payment: invoice doesn't have amount")
-      return false;
-    }
-
-    let payment_hash = decoded.tags.payment_hash;
-    let min_final_cltv_expiry = decoded.tags.min_final_cltv_expiry;
-    let payment_secret = decoded.tags.payment_secret;
-
-    if (!payment_hash) throw new Error('No payment_hash');
-    if (!payment_secret) throw new Error('No payment_secret');
-
-    const router = new PaymentRouteGenerator(this.externalService, decoded.payee_pubkey, decoded.millisatoshis, usableChannel);
-    const route = await router.generate()
+    const router = new PaymentRouteGenerator(this.externalService, ourNodeId, invoice, openChannel);
+    const routes = await router.generate();
 
     return RnLdkNative.sendPayment(
-      decoded.payee_pubkey,
-      payment_hash,
-      payment_secret,
-      route.short_channel_id,
-      route.payment_value_msat,
-      min_final_cltv_expiry,
-      JSON.stringify(route.ldk_routes, null, 2)
+      invoice.payee_pubkey,
+      invoice.tags.payment_hash,
+      invoice.tags.payment_secret,
+      openChannel.channel_id,
+      invoice.millisatoshis,
+      invoice.tags.min_final_cltv_expiry,
+      JSON.stringify(routes, null, 2)
     );
   }
 
