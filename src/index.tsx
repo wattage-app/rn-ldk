@@ -1,6 +1,6 @@
 import { NativeEventEmitter, NativeModules, Alert } from 'react-native';
 import type { BitcoinTransaction, BitcoinTransactionMerkleProof, DecodedInvoice, ExternalService, LdkChannelInfo } from './interfaces';
-import { BlockstreamApi } from './blockstream';
+import { ExternalApi } from './third_party';
 import { PaymentRouteGenerator } from './routes';
 const { RnLdk: RnLdkNative } = NativeModules;
 const pckg = require('../package.json');
@@ -104,7 +104,7 @@ class RnLdkImplementation {
   private externalService: ExternalService;
 
   constructor() {
-    this.externalService = new BlockstreamApi({
+    this.externalService = new ExternalApi({
       testnet: true,
     })
   }

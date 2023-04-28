@@ -4,7 +4,7 @@ const mainnetApiUrl = "https://blockstream.info/api";
 const testnetApiUrl = "https://blockstream.info/testnet/api";
 const wattageApiUrl = "https://wallet.wattage.app";
 
-export class BlockstreamApi implements ExternalService {
+export class ExternalApi implements ExternalService {
     testnet: boolean;
     _apiUrl: string;
 
