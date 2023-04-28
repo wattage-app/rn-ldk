@@ -646,7 +646,7 @@ class RnLdk: NSObject {
             } else {
                 print("ReactNativeLDK: create_channel_result = false")
                 let error = NSError(domain: "openChannelStep1", code: 1, userInfo: nil)
-                return reject("openChannelStep1", "openChannelStep1 Failed",  error)
+                return reject("openChannelStep1", "create_channel_result is not ok",  error)
             }
         } else {
             print("ReactNativeLDK: create_channel_result = false")
@@ -666,7 +666,7 @@ class RnLdk: NSObject {
         guard let funding_res = channel_manager?.funding_transaction_generated(temporary_channel_id: temporary_channel_id, counterparty_node_id: hexStringToByteArray(counterpartyNodeIdHex), funding_transaction: hexStringToByteArray(txhex)) else {
             print("ReactNativeLDK: funding_res = false")
             let error = NSError(domain: "openChannelStep2", code: 1, userInfo: nil)
-            reject("openChannelStep2", "openChannelStep2 Failed (could not create funding res)",  error)
+            reject("openChannelStep2", "openChannelStep2 Failed",  error)
             return
         }
         // funding_transaction_generated should only generate an error if the
@@ -675,7 +675,7 @@ class RnLdk: NSObject {
         if !funding_res.isOk()  {
             print("ReactNativeLDK: funding_res = false")
             let error = NSError(domain: "openChannelStep2", code: 1, userInfo: nil)
-            reject("openChannelStep2", "openChannelStep2 Failed (funding res not ok)",  error)
+            reject("openChannelStep2", "openChannelStep2 Failed",  error)
             return
         }
 
