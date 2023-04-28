@@ -1,8 +1,8 @@
-import type { BitcoinFeeEstimates, BitcoinTransaction, BitcoinTransactionMerkleProof, DecodedInvoice, ExternalService } from "./interfaces";
+import type { BitcoinFeeEstimates, BitcoinTransaction, BitcoinTransactionMerkleProof, ChanInfo, DecodedInvoice, ExternalService, RouteQueryResponse } from "./interfaces";
 
 const mainnetApiUrl = "https://blockstream.info/api";
 const testnetApiUrl = "https://blockstream.info/testnet/api";
-const wattageApiUrl = "https://squid-app-8win6.ondigitalocean.app";
+const wattageApiUrl = "https://wallet.wattage.app";
 
 export class BlockstreamApi implements ExternalService {
     testnet: boolean;
@@ -12,6 +12,7 @@ export class BlockstreamApi implements ExternalService {
         this.testnet = testnet;
         this._apiUrl = testnet ? testnetApiUrl : mainnetApiUrl;
     }
+
     async scriptToAddress(script: string): Promise<string> {
         const network = this.testnet ? "testnet" : "mainnet";
         const res = await fetch(`${wattageApiUrl}/script-to-address/${network}/${script}`);
@@ -28,6 +29,25 @@ export class BlockstreamApi implements ExternalService {
         });
         
         return await res.json(); 
+    }
+
+    async queryRoutes(pubkey: string, amtMsat: number): Promise<RouteQueryResponse> {
+        const res = await fetch(`${wattageApiUrl}/query-routes`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ 
+                dest_pubkey: pubkey, 
+                amt_msat: amtMsat,
+            }),
+        });
+
+        return res.json();
+    }
+    async getChannelInfo(channelId: string): Promise<ChanInfo> {
+        const res = await fetch(`${wattageApiUrl}/channel-info/${channelId}`);
+        return await res.json();
     }
 
     _getJson(path: string): Promise<any> {

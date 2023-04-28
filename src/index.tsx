@@ -714,17 +714,19 @@ class RnLdkImplementation {
     if (!this.started) throw new Error('LDK not yet started');
     this.logToGeneralLog('sendPayment():', { bolt11 });
     await this.updateBestBlock();
-    let usableChannels: LdkChannelInfo[] = await this.listUsableChannels();
     // fixme: this is a hack to get around the fact that force closed channels are not yet removed from the list
-    const openChannel = await Promise.any(usableChannels.map(channel => {
-      return PaymentRouteGenerator.getChanInfo(channel.short_channel_id);
-    }));
+    let usableChannels: LdkChannelInfo[] = await this.listUsableChannels();
+    const openChannel = await Promise.any(usableChannels.map(
+      (channel) => this.externalService.getChannelInfo(channel.short_channel_id))
+    );
 
-    if (usableChannels.length === 0) throw new Error('No usable channels');
-    const usableChannel = usableChannels.find(channel => channel.short_channel_id === openChannel.channel_id);
+    if (usableChannels.length === 0 || !openChannel) throw new Error('No usable channels');
+    const usableChannel = usableChannels.find(channel => {
+      return channel.short_channel_id === openChannel.channel_id.toString();
+    });
     if (!usableChannel) throw new Error('No usable channels');
-    const decoded = await this.decodeInvoice(bolt11);
 
+    const decoded = await this.decodeInvoice(bolt11);
     if (!decoded.millisatoshis) {
       console.warn("Cannot send payment: invoice doesn't have amount")
       return false;
@@ -737,7 +739,7 @@ class RnLdkImplementation {
     if (!payment_hash) throw new Error('No payment_hash');
     if (!payment_secret) throw new Error('No payment_secret');
 
-    const router = new PaymentRouteGenerator(payment_hash, decoded.millisatoshis, usableChannel)
+    const router = new PaymentRouteGenerator(this.externalService, decoded.payee_pubkey, decoded.millisatoshis, usableChannel);
     const route = await router.generate()
 
     return RnLdkNative.sendPayment(

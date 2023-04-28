@@ -86,44 +86,48 @@ export interface ExternalService {
     getFeeEstimates(): Promise<BitcoinFeeEstimates>;
     scriptToAddress(script: string): Promise<string>;
     decodeInvoice(invoice: string): Promise<DecodedInvoice>;
+    queryRoutes(pubkey: string, amtMsat: number): Promise<RouteQueryResponse>;
+    getChannelInfo(channelId: string): Promise<ChanInfo>;
+}
+
+export interface RouteQueryResponse {
+    routes: RouteQuery[];
+    success_prob: number;
 }
 
 export interface RouteQuery {
     total_time_lock: number;
-    total_fees: string;
-    total_amt: string;
+    total_fees_msat: number;
+    total_amt_msat: number;
     hops: RouteHop[];
 }
 
 export interface RouteHop {
     chan_id: string;
     chan_capacity: string;
-    amt_to_forward: string;
-    fee: string;
     expiry: number;
-    amt_to_forward_msat: string;
-    fee_msat: string;
+    amt_to_forward_msat: number;
+    fee_msat: number;
     pub_key: string;
     tlv_payload: boolean;
 }
 
 export interface NodePolicy {
     time_lock_delta: number;
-    min_htlc: string;
-    fee_base_msat: string;
-    fee_rate_milli_msat: string;
+    min_htlc: number;
+    fee_base_msat: number;
+    fee_rate_milli_msat: number;
     disabled: boolean;
-    max_htlc_msat: string;
+    max_htlc_msat: number;
     last_update: number;
 }
 
 export interface ChanInfo {
     channel_id: string;
     chan_point: string;
-    last_update: number;
     node1_pub: string;
     node2_pub: string;
-    capacity: string;
+    capacity: number;
     node1_policy: NodePolicy;
     node2_policy: NodePolicy;
 }
